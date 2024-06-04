@@ -1,0 +1,418 @@
+###PCA###
+Rscript PCA_DESeq.r read_count mRNA_group.txt ./
+PCA_DESeq.r:
+infile=argv[1]
+samplefile<-argv[2]
+outdir<-argv[3]
+library("DESeq2")
+library("ggplot2")
+cts <-read.table(infile,header=T,row.names=1)
+df <-read.table(infile,header=F,row.names=1,nrow=2,colClasses = "character")
+df.names<-as.matrix(df[1,])
+cts<-as.matrix(cts)
+colnames(cts)=as.vector(df.names)
+
+coldata=read.table(samplefile)
+colnames(coldata)=c("condition","sample")
+rownames(coldata)=coldata$sample
+cts=cts[,as.character(coldata[,"sample"])]
+dds <- DESeqDataSetFromMatrix(countData = round(cts),colData = coldata,design = ~ condition)
+dds <- DESeq(dds)
+rld<- rlogTransformation(dds, blind=TRUE)
+pcaData <- plotPCA(rld, intgroup=c("condition", "sample"), returnData=TRUE)
+percentVar <- round(100*attr(pcaData, "percentVar"))
+pcaData$condition <- as.character(pcaData$condition)
+pcaData$sample <- as.character(pcaData$sample)
+range1=(max(pcaData[[1]])-min(pcaData[[1]]))
+range2=(max(pcaData[[2]])-min(pcaData[[2]]))
+
+xmin=min(pcaData[[1]])-0.1*(max(range1,range2))
+xmax=max(pcaData[[1]])+0.1*(max(range1,range2))
+ymin=min(pcaData[[2]])-0.1*(max(range1,range2))
+ymax=max(pcaData[[2]])+0.1*(max(range1,range2))
+
+rownames(coldata)=coldata[,2]
+for(i in c(1:length(levels(coldata[,1])))){
+        rep=rownames(subset(coldata,coldata[,1]==levels(coldata[,1])[i]))
+        #coldata[rep,"rep"]=paste(levels(coldata[,1])[i],c(1:length(rep)),sep="")
+        coldata[rep,"rep"]=paste("rep",c(1:length(rep)),sep="")
+}
+        print(coldata)
+        
+pcaData[,"Replication"]=coldata[rownames(pcaData),"rep"]
+data=pcaData[,c("condition","sample","Replication","PC1","PC2")]
+write.table(data,paste(outdir,"PCA.txt",sep="/"),quote=F,col.names=T,row.names=F,sep="\t")
+
+q=ggplot(pcaData, aes(PC1, PC2, color=condition, shape=Replication)) +
+  geom_point(size=3,alpha=0.5) +
+  xlab(paste0("PC1: ",percentVar[1],"% variance")) +
+  ylab(paste0("PC2: ",percentVar[2],"% variance")) + 
+  coord_fixed()+xlim(xmin,xmax)+ylim(ymin,ymax)+
+  theme(axis.text = element_text(size = 13, color = "black", face = "bold"),
+        axis.title = element_text(size = 15, color = "black", face = "bold"),
+        legend.text= element_text(size=13, color="black", vjust=0.5, hjust=0.5),
+        legend.title= element_text(size=15, color="black", face = "bold",vjust=0.5, hjust=0.5)
+  )
+
+ggsave(paste(outdir,"PCA.png",sep="/"))
+ggsave(paste(outdir,"PCA.pdf",sep="/"))
+
+##########火山图、MA图##########
+
+Rscript volcano_MA.r files  V_MA
+volcano_MA.r：
+file_data=read.table(argv[1],head=F)
+dir=argv[2]
+pvalue=0.05
+fc=2
+
+fc= log2(fc)
+pfc=fc*(-1)
+plot=c()
+for( i in rownames(file_data)){
+        #in_file=paste(dir,"/",as.character(file_data[i,2]),sep="")
+        in_file=as.character(file_data[i,2])
+        V_out=paste(dir,"/",as.character(file_data[i,1]),".Volcano",sep="")
+        MA_out=paste(dir,"/",as.character(file_data[i,1]),".MA",sep="")
+        control_group=unlist(strsplit(as.character(file_data[i,1]),"_vs_"))[1]
+        case_group=unlist(strsplit(as.character(file_data[i,1]),"_vs_"))[2]
+        legend_text=paste("     Control: ",control_group,"\n","     Treat:    ",case_group,'\n',sep="")
+        df <- read.table(in_file, sep = "\t",stringsAsFactors = F, quote = "", header = T)
+        colnames(df)[c(3,4)]=c("baseMeanA","baseMeanB")
+        miR <- df[,1]
+        df <- df[, -1]
+        df=subset(df,baseMean>0)
+        f <- function(x){
+                if(x[6]<0.05){
+                        if(abs(x[5])>1){
+                                if(x[5]>1){
+                                        return("Up-Regulation")
+                                }else{
+                                        return("Down-Regulation")
+                                }
+                        }else{
+                                return("NoDiff")
+                        }
+                }else{
+                        return("NoDiff")
+                }
+        }
+up=df[(df[5]>fc)&(df[6]<pvalue),]
+        down=df[(df[5]<pfc)&(df[6]<pvalue),]
+        nodiff=df[(df[6]>=pvalue)|(abs(df[5])<=fc),]
+        df[rownames(up),"threshold"]="Up-Regulation"
+        df[rownames(down),"threshold"]="Down-Regulation"
+        df[rownames(nodiff),"threshold"]="NoDiff"
+        max_min=subset(df,!grepl("Inf",log2FoldChange))
+        max_min=subset(max_min,!is.na(log2FoldChange))
+        df[rownames(subset(df,log2FoldChange=="Inf")),"log2FoldChange"]=max(max_min[,"log2FoldChange"])
+        df[rownames(subset(df,log2FoldChange=="-Inf")),"log2FoldChange"]=min(max_min[,"log2FoldChange"])
+        up_count=dim(df[df$threshold=="Up-Regulation",])[1]
+        down_count=dim(df[df$threshold=="Down-Regulation",])[1]
+        no_count=dim(df[df$threshold=="NoDiff",])[1]
+
+        df[df$threshold=="Up-Regulation","threshold"] = paste("Up (",up_count,")",sep="")
+        df[df$threshold=="Down-Regulation","threshold"] = paste("Down (",down_count,")",sep="")
+        df[df$threshold=="NoDiff","threshold"] = paste("NoDiff (",no_count,")",sep="")
+
+        col_value=c()
+        if(dim(df[grepl("Down",df$threshold),])[1]!=0){
+                col_value=c(col_value,"blue")
+        }
+        if(dim(df[grepl("NoDiff",df$threshold),])[1] !=0){
+                col_value=c(col_value,"grey")
+        }
+        if(dim(df[grepl("Up",df$threshold),])[1] !=0){
+                col_value=c(col_value,"red")
+        }
+        
+        print(col_value)
+        q <- ggplot(df, aes(log2FoldChange, -log10(pval), color = threshold)) 
+            
+        q = q + geom_point(alpha=0.7, size=0.5) 
+        q = q +  scale_color_manual(values=col_value) 
+        q = q + xlab("log2(Fold Change)") + ylab("-log10(p-value)") +labs(color = legend_text) 
+        q = q + geom_vline(xintercept = fc, alpha = .9,color="black",linetype="dashed", size = 0.25) 
+        q = q + geom_vline(xintercept = pfc, alpha = .9,color="black",linetype="dashed", size = 0.25) 
+        q = q + geom_hline(yintercept = -log10(pvalue), color="black",alpha = .9,linetype="dashed", size = 0.25) 
+        q = q + theme(legend.title = element_text(size = rel(0.8)))
+        q1 = q + theme_bw()
+        q1 = q1 + theme(axis.text = element_text(size = 13, color = "black", face = "bold"))
+        q1 = q1 + theme(axis.title = element_text(size = 15, color = "black", face = "bold"))
+        q1 = q1 + theme(legend.text= element_text(size=12, color="black",  vjust=0.5, hjust=0.5))
+        q1 = q1 + theme(legend.title= element_text(size=12, color="black",vjust=0.5, hjust=0.5))
+	ggsave(paste(V_out,".pdf",sep=""),height =6)
+        ggsave(paste(V_out,".png",sep=""),height=6）
+        df$log2AverageIntensity <- 0.5 * log2((df$baseMeanA+1) * (df$baseMeanB+1))
+        q2 <- ggplot(df, aes(log2AverageIntensity, log2FoldChange, color = threshold))
+        q2 = q2 + geom_point(alpha=0.7, size=0.5) + scale_color_manual(values=col_value) 
+        q2 = q2 + xlab("A") + ylab("M") +labs(color = legend_text)
+        q2 = q2 + theme(legend.title = element_text(size = rel(0.8)))
+        q2 = q2 + theme_bw()
+        q2 = q2 + theme(axis.text = element_text(size = 13, color = "black", face = "bold"))
+        q2 = q2 + theme(axis.title = element_text(size = 15, color = "black", face = "bold"))
+        q2 = q2 + theme(legend.text= element_text(size=12, color="black",  vjust=0.5, hjust=0.5))
+        q2 = q2 + theme(legend.title= element_text(size=12, color="black",  vjust=0.5, hjust=0.5))
+        q2
+        ggsave(paste(MA_out,".pdf",sep=""),height=6)
+        ggsave(paste(MA_out,".png",sep=""),height=6)
+
+}
+
+#######heatmap#########
+Rscript heatmap.r -l DE_list  -exp fpkm -prefix name -sample group.txt
+argv <- commandArgs(TRUE)
+#argv=c("-l","Control_vs_Heat","-exp","RPKM.xls","-sample","Control_vs_Heat.sample","-prefix","CS-CK_vs_CS-T")
+
+cat("\n-----------------------------\n[Rscript] DE/heatmap/heatmap.r\n-----------------------------\n")
+if(length(argv)<2){
+  cat("USAGE:\n\t heatmap.R -l <DE_list> -exp <expression> -sample <sample> -prefix <>\n\n")
+  cat("      <-l> file of gene list\n")
+  cat("    <-exp> TPM/RPKM file\n")
+  cat(" <-prefix> outpu file prefix :i.e. heatmap\n")
+  cat(" <-sample> [optional] file of list :sample and group, show group name or not, default not show\n\n")
+  cat("   <-trend> [optional] run expression trend analysis \n\n")
+  quit()
+  n
+}
+library(pheatmap)
+sample="FALSE"
+trend="FALSE"
+for(i in seq(1,length(argv),2)){
+  if(argv[i]=="-l"){
+    DE_miR_file=argv[i+1]
+  }
+  if(argv[i]=="-exp"){
+    TPM=argv[i+1]
+  }
+  if(argv[i]=="-sample"){
+    sample=argv[i+1]
+  }
+  if(argv[i]=="-name"){
+    name=argv[i+1]
+  }
+  if(argv[i]=="-prefix"){
+    prefix=argv[i+1]
+  }
+  if(argv[i]=="-trend"){
+    trend="TRUE"
+  }
+  
+}
+
+cat("\nDE_miR_file: ",DE_miR_file,"\n")
+cat("TPM: ",TPM,"\n")
+cat("sample: ",sample,"\n")
+cat("prefix: ",prefix,"\n")
+pdf1=paste(prefix,".pdf",sep="")
+png1=paste(prefix,".png",sep="")
+pdf2=paste(prefix,".name.pdf",sep="")
+png2=paste(prefix,".name.png",sep="")
+txt=paste(prefix,".heatmap.txt",sep="")
+
+miR <- readLines(DE_miR_file)
+dg=read.table(sample,row.names=2)
+sample_num <- nrow(dg)
+df <- read.table(TPM, sep = "\t", header = T, stringsAsFactors = F, 
+	      check.names = F, quote = "", row.names = 1)
+df <- log2(df + 1)
+if(sample_num > 2){
+  df<-t(scale(t(df)))
+}
+df_raw <- df[rownames(df) %in% miR, colnames(df) %in% rownames(dg)]
+#dim(df_raw)
+if(dim(df_raw)[1]<2){
+	cat("\n\n[ERROR] no expression data in expression file for gene list\n\n")
+	q()
+	n
+}
+
+annotation_col=data.frame(group = dg[colnames(df_raw),])
+rownames(annotation_col) = colnames(df_raw)
+scale="row" 
+#if(dim(df)[2]<3){
+scale="none"
+#}
+df=df_raw
+#head(df,n=2)
+
+  
+  Genename=TRUE
+  Samplename=TRUE
+
+  ch=2
+  cw=2
+  png_height=0.02084*dim(df)[1] + 0.34855
+  png_width=0.09164*dim(df)[2]+0.43669+0.3
+
+  p=pheatmap(df, border_color = NA,
+	color = colorRampPalette(c("green", "black", "red"))(255), 
+	scale = scale, fontsize_col=20,
+	cellwidth = cw,cellheight=ch,
+	annotation_col=annotation_col,
+	show_rownames=Genename,show_colnames=Samplename,
+	filename=png2,
+	width=50,
+	height=100
+	)
+# dev.off()
+save(list=ls(all=TRUE), file="heatmap.RData")
+
+  order_row=p[[1]][[3]]
+  labels_row=p[[1]][[4]]
+  order_col=p[[2]][[3]]
+  labels_col=p[[2]][[4]]
+  df_tmp=data.frame(Sample=labels_row[order_row])
+  df_tmp=cbind(df_tmp,df[labels_row[order_row],labels_col[order_col]])
+  write.table(df_tmp,txt,quote=F,sep="\t",row.names=F)
+  png_width=1.2
+  cw=320/dim(df)[2]
+  ch=330/dim(df)[1]
+  size=300/dim(df)[2]
+  if(dim(df)[2]<20){size=15}
+  Genename=FALSE
+  Samplename=TRUE
+  png(png1,width=480*png_width,height=480*png_width)
+  pheatmap(df, border_color = NA,
+	color = colorRampPalette(c("green", "black", "red"))(255), 
+	scale = scale, 
+	cellwidth = cw,cellheight=ch,
+	annotation_col=annotation_col,fontsize_col=size,
+	show_rownames=Genename,show_colnames=Samplename)
+  dev.off()
+  pdf(pdf1, width = 7*png_width, height = 7*png_width,onefile=F)
+  pheatmap(df, border_color = NA, 
+	color = colorRampPalette(c("green", "black", "red"))(255), 
+	scale = scale, 
+	cellwidth = cw,cellheight=ch,
+	annotation_col=annotation_col,fontsize_col=size,
+	show_rownames=Genename,show_colnames=Samplename)
+  dev.off()
+#######KEGG富集分析############
+气泡图
+file=arguments[1]
+out_dir=arguments[2]
+picture_title="KEGG Pathway Enrichment"
+if(length(arguments)>2){
+        pairwise=arguments[3]
+        picture_title=paste(picture_title,pairwise,sep=" of ")
+}
+
+df<-read.table(file,header=T,sep="\t",quote="")
+df$k<-as.numeric(df$k)
+df$M<-as.numeric(df$M)
+df$total<-as.numeric(df$total)
+df$list<-as.numeric(df$list)
+df$pvalue<-phyper(df$k-1,df$M, df$total-df$M,df$list , lower.tail=FALSE);
+df$FDR <- p.adjust(df$pvalue,method="fdr");
+df=df[order(df$pvalue),]
+df=df[df$k > 0,]
+out_df=df[,c("pathwayID","pathway","Level1","Level2","k","M","pvalue","FDR","gene")]
+colnames(out_df)=c("pathwayID","Pathway","Level1","Level2","list","total","pvalue","FDR","gene");
+write.table(out_df,paste(out_dir,"kegg_step2",sep="/"),sep="\t",quote=F,row.names = F)
+if(nrow(out_df) < 20){out_df <- out_df[seq(1,nrow(out_df),1),]}else{out_df <- out_df[seq(1,20,1),]}
+out_df$Pathway=factor(out_df$Pathway,levels=unique(out_df$Pathway))
+out_df$rich=out_df$list / out_df$total
+out_df$Number=out_df$list
+q<-qplot(rich,Pathway,data=out_df,colour=FDR,size=Number,main=picture_title)+
+        scale_colour_gradient(low="red",high="green",limits=c(0,1))+
+        theme(panel.background=element_rect(fill="white",color="black"),panel.grid.major=element_line(color="grey80",linetype="dotted"))
+ggsave(paste(out_dir,"KEGG.richfactor.pdf",sep="/"),width = 10, height = 10)
+ggsave(paste(out_dir,"KEGG.richfactor.png",sep="/"))
+柱状图
+library("ggplot2")
+arguments=commandArgs(TRUE)
+
+in_file <- arguments[1]
+out_dir <- arguments[2]
+
+df<-read.table(in_file,sep="\t",header=T,quote="",comment.char = "")
+df=df[1:30,]
+df<-df[!is.na(df$Pathway),]
+df=df[order(df$Level1),]
+#colnames(df)=c("level","discription","N","F","Pvalue")
+df$Category=df$Level1
+
+df$Category <- factor(df$Category, levels = unique(df$Category))
+df$Pathway <- factor(df$Pathway, levels = df$Pathway)
+#plus<-max(df$count)*0.06
+p<- ggplot(data = df) +
+#  geom_text(aes(x=df$count+plus,y=df$Term,label=df$ratio))+
+  geom_col(aes(x = Pathway, y = -log10(as.numeric(Pvalue)), fill = Category),width =0.8) +
+#  scale_x_continuous(limit=c(0,max(df$count)+0.2*max(df$count)),expand=c(0,0))+
+  scale_color_brewer(type="seq",palette="Dark2")+
+ # facet_grid(. ~ Category, scale = "free", space = "free") +
+  theme( strip.text.y = element_text(angle = 0),axis.text.x=element_text(size=10,angle=80,hjust=1)) +
+  ylab("-log10(P-value)")
+ggsave(paste(out_dir,"KEGG_enrichment_pvalue_barplot.pdf",sep="/"), width = 10, height = 10)
+ggsave(paste(out_dir,"KEGG_enrichment_pvalue_barplot.png",sep="/"), width = 10, height = 10)
+####################GO###########################
+气泡图
+rownames(merge_table)=merge_table$GO.ID
+#merge_table<-merge_table[order(as.numeric(merge_table$classic)),]
+#merge_table<-merge_table[merge_table$Significant>0,]
+
+#merge_table$FDR <- p.adjust(sub("^< ","",merge_table$classic),method="fdr");
+#merge_table$classic <- sub("^< ","",merge_table$classic);
+
+#merge_table<-merge_table[order(as.numeric(merge_table$FDR)),]
+merge_table<-merge_table[order(as.numeric(sub("^< ","",merge_table$classic))),]
+
+colnames(merge_table)=c("GO.ID","Term","Total","List","Expect","Pvalue","Gene","Category","FDR")
+merge_table<-merge_table[,c(8,1,2,4,3,6,9,7)]
+#merge_table<-merge_table[order(merge_table$Pvalue),]
+write.table(merge_table,file=paste(out_dir,"/topGO_GenTable.tsv",sep=''),col.names=T,row.names=F,quote=F,sep='\t')
+
+
+if(nrow(merge_table) < 20){out_df <- merge_table[seq(1,nrow(merge_table),1),]}else{out_df <- merge_table[seq(1,20,1),]}
+out_df$Term=substring(out_df$Term,1,50)
+out_df$Term=factor(out_df$Term,levels=unique(out_df$Term))
+#out_df$Term=substring(out_df$Term,1,50)
+out_df<-out_df[!duplicated(out_df[,"Term"]),]
+out_df$rich=out_df$List / out_df$Total
+out_df$Number=out_df$List
+q<-qplot(rich,Term,data=out_df,colour=FDR,size=Number,main=picture_title)+
+        scale_colour_gradient(low="red",high="green",limits=c(0,1))+
+        theme(panel.background=element_rect(fill="white",color="black"),panel.grid.major=element_line(color="grey80",linetype="dotted"))
+ggsave(paste(out_dir,"GO.richfactor.pdf",sep="/"),width = 10, height = 10)
+ggsave(paste(out_dir,"GO.richfactor.png",sep="/"))
+柱状图：
+library("ggplot2")
+arguments=commandArgs(TRUE)
+
+in_file <- arguments[1]
+out_dir <- arguments[2]
+
+df<-read.table(in_file,sep="\t",header=T,quote="",comment.char = "")
+
+cc<-df[df$Category=="CC",]
+bp<-df[df$Category=="BP",]
+mf<-df[df$Category=="MF",]
+
+df<-rbind(cc[1:10,],mf[1:10,],bp[1:10,])
+
+df<-df[!is.na(df$Category),]
+#colnames(df)=c("level","discription","N","F","Pvalue")
+
+df$Term=substring(df$Term,1,50)
+df$Term=paste(df$GO.ID,df$Term,sep=" ")
+df$Category <- factor(df$Category, levels = unique(df$Category))
+df$Term <- factor(df$Term, levels = df$Term)
+#plus<-max(df$count)*0.06
+df$Pvalue <- sub("^< ","",df$Pvalue)
+
+
+p<- ggplot(data = df) +
+#  geom_text(aes(x=df$count+plus,y=df$Term,label=df$ratio))+
+  geom_col(aes(x = Term, y =-log10(as.numeric(Pvalue)), fill = Category)) +
+#  scale_x_continuous(limit=c(0,max(df$count)+0.2*max(df$count)),expand=c(0,0))+
+  scale_color_brewer(type="seq",palette="Dark2")+
+ # facet_grid(. ~ Category, scale = "free", space = "free") +
+  theme( strip.text.y = element_text(angle = 0),axis.text.x=element_text(size=10,angle=80,hjust=1)) +
+  ylab("-log10(P-value)")
+ggsave(paste(out_dir,"GO_enrichment_pvalue_barplot.pdf",sep="/"), width = 10, height = 10)
+ggsave(paste(out_dir,"GO_enrichment_pvalue_barplot.png",sep="/"), width = 10, height = 10)
+
+
+
+
